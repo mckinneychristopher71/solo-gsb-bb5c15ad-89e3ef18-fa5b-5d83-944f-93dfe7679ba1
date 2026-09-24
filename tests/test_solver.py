@@ -6,7 +6,13 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.solver import CapacityExceededError, Ware, solve  # noqa: E402
+from app.solver import (  # noqa: E402
+    CapacityExceededError,
+    TargetUnreachableError,
+    Ware,
+    min_capacity_for_target,
+    solve,
+)
 
 
 def _feasible(items_by_id, group, capacity):
@@ -155,6 +161,84 @@ def test_n14_performance_and_correctness():
     assert len(kilns) == 1
     assert kilns[0].firing_temp == 1013
     assert kilns[0].total_volume == 14
+
+
+def test_min_capacity_basic():
+    # 三件各 6、温度全兼容：3 窑需容量 6，2 窑需 12，1 窑需 18
+    items = [Ware(str(i), 6, 100, 200) for i in range(1, 4)]
+    cap, kilns = min_capacity_for_target(items, 3)
+    assert cap == 6 and len(kilns) == 3
+    cap, kilns = min_capacity_for_target(items, 2)
+    assert cap == 12 and len(kilns) == 2
+    # ("1",) 是 ("1","2") 的前缀，字典序更小，故首窑只装 "1"
+    assert [k.item_ids for k in kilns] == [("1",), ("2", "3")]
+    cap, kilns = min_capacity_for_target(items, 1)
+    assert cap == 18 and len(kilns) == 1
+    assert kilns[0].item_ids == ("1", "2", "3")
+    assert kilns[0].firing_temp == 100
+    assert kilns[0].total_volume == 18
+
+
+def test_min_capacity_target_equals_item_count():
+    # 目标 = 器物数时，最大单件体积即可（每件一窑）
+    items = [Ware("a", 5, 100, 200), Ware("b", 9, 100, 200)]
+    cap, kilns = min_capacity_for_target(items, 2)
+    assert cap == 9 and len(kilns) == 2
+
+
+def test_min_capacity_unreachable():
+    # 温度区间互不兼容：任何容量下 1 与 2 都不可同窑
+    items = [Ware("1", 3, 100, 120), Ware("2", 4, 130, 140)]
+    try:
+        min_capacity_for_target(items, 1)
+        assert False, "应抛出 TargetUnreachableError"
+    except TargetUnreachableError:
+        pass
+    # 目标 2 可达：最小容量为最大单件体积
+    cap, kilns = min_capacity_for_target(items, 2)
+    assert cap == 4 and len(kilns) == 2
+
+
+def test_min_capacity_invalid_target():
+    items = [Ware("a", 5, 100, 200)]
+    try:
+        min_capacity_for_target(items, 0)
+        assert False, "应抛出 ValueError"
+    except ValueError:
+        pass
+
+
+def test_min_capacity_matches_linear_scan():
+    # 随机小规模用例：与 [最大单件, 总体积] 全范围线性扫描交叉验证，
+    # 同时校验返回方案与 solve 在该容量下的字典序最小方案一致
+    rng = random.Random(7)
+    for trial in range(200):
+        n = rng.randint(1, 7)
+        items = []
+        for i in range(n):
+            vol = rng.randint(1, 8)
+            lo = rng.randint(900, 1000)
+            hi = lo + rng.randint(0, 100)
+            items.append(Ware(f"id{i}", vol, lo, hi))
+        max_vol = max(it.volume for it in items)
+        total = sum(it.volume for it in items)
+        counts = {cap: len(solve(items, cap)) for cap in range(max_vol, total + 1)}
+        for target in range(1, n + 1):
+            feasible = [c for c, k in counts.items() if k <= target]
+            if not feasible:
+                try:
+                    min_capacity_for_target(items, target)
+                    assert False, f"trial {trial}: 应抛出 TargetUnreachableError"
+                except TargetUnreachableError:
+                    continue
+            exp_cap = min(feasible)
+            got_cap, kilns = min_capacity_for_target(items, target)
+            assert got_cap == exp_cap, (
+                f"trial {trial} target {target}: {got_cap} != {exp_cap}"
+            )
+            assert len(kilns) == counts[got_cap] <= target
+            exp_kilns = solve(items, exp_cap)
+            assert [k.item_ids for k in kilns] == [k.item_ids for k in exp_kilns]
 
 
 if __name__ == "__main__":

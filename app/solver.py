@@ -25,6 +25,10 @@ class CapacityExceededError(ValueError):
     """单件器物体积超过单窑容量，无法烧成。"""
 
 
+class TargetUnreachableError(ValueError):
+    """容量取器物总体积时最少窑次仍超过目标窑次，目标不可达。"""
+
+
 @dataclass(frozen=True)
 class Ware:
     item_id: str
@@ -155,3 +159,52 @@ def solve(items: list[Ware], capacity: int) -> list[Kiln]:
         allowed_kilns -= 1
 
     return kilns
+
+
+def min_capacity_for_target(
+    items: list[Ware], target_kiln_count: int
+) -> tuple[int, list[Kiln]]:
+    """求使最少窑次不超过 target_kiln_count 的最小单窑容量。
+
+    在 [最大单件体积, 器物总体积] 的整数容量范围内搜索：
+    容量不小于最大单件体积时 solve 不会抛出 CapacityExceededError，
+    容量达到总体积时体积约束名存实亡（仅剩温区规则）。
+
+    窑次数随容量单调不增——容量放宽只会扩大可成窑子集集合，
+    dp 值不会变大——故二分查找最小可行容量；
+    每个容量点的判定与方案排序完全复用 solve。
+
+    :returns: (最小容量, 该容量下最少窑次且字典序最小的装窑方案)。
+    :raises TargetUnreachableError: 容量取总体积时最少窑次仍超过目标。
+    :raises ValueError: 器物列表为空或超过 14 件，或目标窑次小于 1。
+    """
+
+    n = len(items)
+    if n == 0:
+        raise ValueError("至少需要一件器物")
+    if n > 14:
+        raise ValueError("器物数量不得超过 14 件")
+    if target_kiln_count < 1:
+        raise ValueError("目标窑次至少为 1")
+
+    lo = max(it.volume for it in items)
+    hi = sum(it.volume for it in items)
+
+    # best_kilns 始终保持为 solve(items, hi) 的结果。
+    best_kilns = solve(items, hi)
+    if len(best_kilns) > target_kiln_count:
+        raise TargetUnreachableError(
+            f"容量取器物总体积 {hi} 时最少仍需 {len(best_kilns)} 窑，"
+            f"超过目标 {target_kiln_count} 窑，目标不可达"
+        )
+
+    while lo < hi:
+        mid = (lo + hi) // 2
+        kilns = solve(items, mid)
+        if len(kilns) <= target_kiln_count:
+            hi = mid
+            best_kilns = kilns
+        else:
+            lo = mid + 1
+
+    return lo, best_kilns

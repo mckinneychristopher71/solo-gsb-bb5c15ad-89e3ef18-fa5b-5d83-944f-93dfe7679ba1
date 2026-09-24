@@ -78,3 +78,21 @@ class PlanOut(BaseModel):
 class ErrorOut(BaseModel):
     error: str
     message: str
+
+
+class CapacityTargetIn(BaseModel):
+    """目标窑次请求。"""
+
+    target_kiln_count: int = Field(
+        ..., strict=True, ge=1, description="目标窑次上限（1～原方案器物数）"
+    )
+
+
+class CapacityTargetOut(BaseModel):
+    """最低容量求解结果（不改动原方案）。"""
+
+    plan_id: str = Field(..., description="原方案 ID")
+    target_kiln_count: int = Field(..., description="目标窑次上限")
+    min_capacity: int = Field(..., description="使最少窑次不超过目标的最小单窑容量")
+    kiln_count: int = Field(..., description="该容量下的实际窑次")
+    kilns: list[KilnOut] = Field(..., description="该容量下的装窑明细")

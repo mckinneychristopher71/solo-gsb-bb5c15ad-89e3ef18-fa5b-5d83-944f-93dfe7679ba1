@@ -114,6 +114,54 @@ curl 示例：
 curl -s http://localhost:8000/plans/9c05e113e3e0430eb552a0bd01036dbb
 ```
 
+### 3. 求满足目标窑次的最低单窑容量
+
+`POST http://localhost:8000/plans/{id}/capacity-target`
+
+针对**已保存**的方案，以方案中保存的器物体积与温度区间为准，在
+「最大单件体积 ～ 器物总体积」的整数容量范围内，求使**最少窑次 ≤ 目标窑次**
+的**最小单窑容量**。每个容量点的判定沿用与创建方案相同的求解器
+（同窑温区规则、同窑次字典序排序规则）。**只读计算，不改写原方案。**
+
+请求体：
+
+```json
+{"target_kiln_count": 2}
+```
+
+字段约束：`target_kiln_count` 为整数，范围 `1～原方案器物数`。
+
+curl 示例：
+
+```bash
+curl -s -X POST http://localhost:8000/plans/9c05e113e3e0430eb552a0bd01036dbb/capacity-target \
+  -H 'Content-Type: application/json' \
+  -d '{"target_kiln_count": 2}'
+```
+
+成功响应 `200 OK`（最低容量、实际窑次与对应装窑明细）：
+
+```json
+{
+  "plan_id": "9c05e113e3e0430eb552a0bd01036dbb",
+  "target_kiln_count": 2,
+  "min_capacity": 15,
+  "kiln_count": 2,
+  "kilns": [
+    {"index": 1, "item_ids": ["p1", "p2", "p3"], "total_volume": 15, "firing_temp": 150},
+    {"index": 2, "item_ids": ["p4"],             "total_volume": 5,  "firing_temp": 1000}
+  ]
+}
+```
+
+错误情况：
+
+- `400` `TARGET_OUT_OF_RANGE`：`target_kiln_count` 超出 `1～原方案器物数`；
+- `400` `TARGET_UNREACHABLE`：容量取器物总体积时最少窑次仍超过目标
+  （通常因温度区间互不兼容），响应体说明所需的最少窑次；
+- `404` `PLAN_NOT_FOUND`：方案不存在；
+- `422`：请求参数非法（如 `target_kiln_count` 小于 1 或非整数）。
+
 ## 本地开发（不使用 Docker）
 
 ```bash
@@ -139,6 +187,11 @@ python3 tests/test_solver.py
    器物编号序列字典序最小的子集作为下一窑。
 
 n = 14 时子集总数 16 384，典型耗时在 1 秒以内。
+
+`capacity-target` 接口的最低容量搜索：窑次数随容量**单调不增**
+（容量放宽只会扩大可成窑子集集合），故在
+「最大单件体积 ～ 器物总体积」区间上**二分查找**最小可行容量，
+每个容量点完整调用上述求解器，搜索次数为区间长度的对数级。
 
 ## 目录结构
 

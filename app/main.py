@@ -1,8 +1,9 @@
 """陶艺工作室共窑排程 API。
 
-POST /plans            提交器物与容量，求解、保存并返回方案
-GET  /plans/{plan_id}  按 ID 读取已保存方案
-GET  /health           健康检查
+POST /plans                              提交器物与容量，求解、保存并返回方案
+GET  /plans/{plan_id}                    按 ID 读取已保存方案
+POST /plans/{plan_id}/capacity-target    求使最少窑次不超过目标的最小单窑容量
+GET  /health                             健康检查
 """
 
 from __future__ import annotations
@@ -15,11 +16,20 @@ from fastapi.responses import JSONResponse
 
 from . import database
 from .schemas import (
+    CapacityTargetIn,
+    CapacityTargetOut,
     ErrorOut,
+    KilnOut,
     PlanCreate,
     PlanOut,
 )
-from .solver import CapacityExceededError, Ware, solve
+from .solver import (
+    CapacityExceededError,
+    TargetUnreachableError,
+    Ware,
+    min_capacity_for_target,
+    solve,
+)
 
 app = FastAPI(
     title="陶艺工作室共窑排程 API",
@@ -38,6 +48,14 @@ def _capacity_exceeded_handler(_: Request, exc: CapacityExceededError) -> JSONRe
     return JSONResponse(
         status_code=400,
         content={"error": "ITEM_EXCEEDS_CAPACITY", "message": str(exc)},
+    )
+
+
+@app.exception_handler(TargetUnreachableError)
+def _target_unreachable_handler(_: Request, exc: TargetUnreachableError) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"error": "TARGET_UNREACHABLE", "message": str(exc)},
     )
 
 
@@ -108,3 +126,70 @@ def read_plan(plan_id: str) -> PlanOut:
             },
         )
     return PlanOut(**plan)
+
+
+@app.post(
+    "/plans/{plan_id}/capacity-target",
+    response_model=CapacityTargetOut,
+    tags=["plans"],
+    responses={
+        400: {"model": ErrorOut, "description": "目标窑次超出范围或总体积容量下仍不可达"},
+        404: {"model": ErrorOut, "description": "方案不存在"},
+    },
+    summary="求满足目标窑次的最低单窑容量",
+)
+def capacity_target(plan_id: str, payload: CapacityTargetIn) -> CapacityTargetOut:
+    plan = database.get_plan(plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "PLAN_NOT_FOUND",
+                "message": f"未找到排程方案: {plan_id}",
+            },
+        )
+
+    target = payload.target_kiln_count
+    if target > plan["item_count"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "TARGET_OUT_OF_RANGE",
+                "message": (
+                    f"目标窑次 {target} 超出范围: "
+                    f"原方案共 {plan['item_count']} 件器物，"
+                    f"target_kiln_count 须在 1～{plan['item_count']} 之间"
+                ),
+            },
+        )
+
+    # 以原方案保存的器物体积与温度区间为准重新求解，不改写原方案。
+    wares = [
+        Ware(
+            item_id=it["item_id"],
+            volume=it["volume"],
+            temp_low=it["temp_low"],
+            temp_high=it["temp_high"],
+        )
+        for it in plan["items"]
+    ]
+
+    # 总体积容量下仍不可达时 solver 抛出 TargetUnreachableError，
+    # 由全局处理器返回 400。
+    min_capacity, kilns = min_capacity_for_target(wares, target)
+
+    return CapacityTargetOut(
+        plan_id=plan["id"],
+        target_kiln_count=target,
+        min_capacity=min_capacity,
+        kiln_count=len(kilns),
+        kilns=[
+            KilnOut(
+                index=idx,
+                item_ids=list(k.item_ids),
+                total_volume=k.total_volume,
+                firing_temp=k.firing_temp,
+            )
+            for idx, k in enumerate(kilns, start=1)
+        ],
+    )
