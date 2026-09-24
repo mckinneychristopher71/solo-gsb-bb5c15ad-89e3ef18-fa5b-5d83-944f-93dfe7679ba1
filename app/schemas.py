@@ -1,0 +1,80 @@
+"""请求 / 响应数据模型。"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class ItemIn(BaseModel):
+    """单件器物。"""
+
+    item_id: str = Field(..., min_length=1, description="器物唯一编号（非空字符串）")
+    volume: int = Field(..., strict=True, ge=1, description="体积（正整数）")
+    temp_low: int = Field(..., strict=True, description="允许烧成温度区间下界")
+    temp_high: int = Field(..., strict=True, description="允许烧成温度区间上界")
+
+    @field_validator("item_id")
+    @classmethod
+    def _strip_and_check(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("器物编号不得为空白字符串")
+        return v
+
+    @model_validator(mode="after")
+    def _check_interval(self):
+        if self.temp_low > self.temp_high:
+            raise ValueError(
+                f"器物 {self.item_id} 的温度区间非法: "
+                f"下界 {self.temp_low} 大于上界 {self.temp_high}"
+            )
+        return self
+
+
+class PlanCreate(BaseModel):
+    """排程请求。"""
+
+    capacity: int = Field(..., strict=True, ge=1, description="单窑容量（正整数）")
+    items: list[ItemIn] = Field(..., min_length=1, max_length=14)
+
+    @model_validator(mode="after")
+    def _unique_ids(self):
+        seen: set[str] = set()
+        dup: list[str] = []
+        for it in self.items:
+            if it.item_id in seen and it.item_id not in dup:
+                dup.append(it.item_id)
+            seen.add(it.item_id)
+        if dup:
+            raise ValueError(f"器物编号必须唯一，重复编号: {', '.join(dup)}")
+        return self
+
+
+class ItemOut(ItemIn):
+    pass
+
+
+class KilnOut(BaseModel):
+    """一窑的排程结果。"""
+
+    index: int = Field(..., description="窑次序号，从 1 开始")
+    item_ids: list[str] = Field(..., description="本窑器物编号，按编号升序")
+    total_volume: int
+    firing_temp: int = Field(..., description="烧成温度（温度区间交集下界）")
+
+
+class PlanOut(BaseModel):
+    """已保存的排程方案。"""
+
+    id: str
+    capacity: int
+    item_count: int
+    kiln_count: int
+    items: list[ItemOut]
+    kilns: list[KilnOut]
+    created_at: str
+
+
+class ErrorOut(BaseModel):
+    error: str
+    message: str
