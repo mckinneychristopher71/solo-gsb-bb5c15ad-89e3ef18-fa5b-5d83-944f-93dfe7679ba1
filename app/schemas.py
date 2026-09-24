@@ -75,6 +75,25 @@ class PlanOut(BaseModel):
     created_at: str
 
 
+class CapacityTargetIn(BaseModel):
+    """容量反推请求：希望的目标窑次（1～原方案器物数，运行时按方案校验上界）。"""
+
+    target_kiln_count: int = Field(
+        ..., strict=True, ge=1, description="目标窑次（1～原方案器物数）"
+    )
+
+
+class CapacityTargetOut(BaseModel):
+    """容量反推结果（基于已保存方案的器物临时计算，不落库、不改写原方案）。"""
+
+    plan_id: str
+    target_kiln_count: int
+    capacity: int = Field(..., description="满足目标窑次的最小单窑容量")
+    item_count: int
+    kiln_count: int = Field(..., description="该容量下的实际最少窑次（≤ 目标）")
+    kilns: list[KilnOut]
+
+
 class ErrorOut(BaseModel):
     error: str
     message: str

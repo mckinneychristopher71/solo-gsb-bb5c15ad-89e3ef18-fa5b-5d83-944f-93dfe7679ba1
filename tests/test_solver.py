@@ -6,7 +6,13 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.solver import CapacityExceededError, Ware, solve  # noqa: E402
+from app.solver import (  # noqa: E402
+    CapacityExceededError,
+    TargetUnreachableError,
+    Ware,
+    solve,
+    solve_capacity_target,
+)
 
 
 def _feasible(items_by_id, group, capacity):
@@ -155,6 +161,109 @@ def test_n14_performance_and_correctness():
     assert len(kilns) == 1
     assert kilns[0].firing_temp == 1013
     assert kilns[0].total_volume == 14
+
+
+def test_capacity_target_minimum_capacity():
+    # 每件 6、温度全兼容；容量区间 [6,18]。
+    # cap 11 -> 3 窑；cap 12 -> 2 窑（两件 12 可行）。目标 2 的最小容量为 12。
+    # 字典序规则下 ("1",) 是 ("1","2") 的前缀，故首窑取 ("1",)。
+    items = [Ware(str(i), 6, 100, 200) for i in range(1, 3 + 1)]
+    result = solve_capacity_target(items, 2)
+    assert result.capacity == 12
+    assert result.kiln_count == 2
+    assert tuple(k.item_ids for k in result.kilns) == (("1",), ("2", "3"))
+    # 直接调用 solve 验证边界两侧
+    assert len(solve(items, 11)) == 3
+    assert len(solve(items, 12)) == 2
+
+
+def test_capacity_target_lower_bound_is_max_single_volume():
+    # 最大单件体积即满足目标（每件各自一窑）
+    items = [Ware("a", 3, 100, 200), Ware("b", 7, 100, 200)]
+    result = solve_capacity_target(items, 2)
+    assert result.capacity == 7
+    assert result.kiln_count == 2
+
+
+def test_capacity_target_single_item():
+    items = [Ware("a", 42, 1000, 1100)]
+    result = solve_capacity_target(items, 1)
+    assert result.capacity == 42
+    assert result.kiln_count == 1
+    assert result.kilns[0].item_ids == ("a",)
+
+
+def test_capacity_target_unreachable_by_temperature():
+    # 1 与 2 温度区间无交集，总体积容量下也必须 2 窑。
+    items = [Ware("1", 1, 100, 120), Ware("2", 1, 130, 140)]
+    try:
+        solve_capacity_target(items, 1)
+        assert False, "应抛出 TargetUnreachableError"
+    except TargetUnreachableError:
+        pass
+    # 目标 2 可达，最小容量为最大单件体积
+    result = solve_capacity_target(items, 2)
+    assert result.capacity == 1
+    assert result.kiln_count == 2
+
+
+def test_capacity_target_invalid_target():
+    items = [Ware("1", 1, 100, 200), Ware("2", 1, 100, 200)]
+    for bad in (0, 3, -1):
+        try:
+            solve_capacity_target(items, bad)
+            assert False, f"目标窑次 {bad} 应抛出 ValueError"
+        except ValueError:
+            pass
+
+
+def test_capacity_target_never_below_max_volume():
+    # 即使目标窑次等于器物数，容量下界仍是最大单件体积
+    items = [Ware("1", 5, 100, 200), Ware("2", 9, 100, 200)]
+    result = solve_capacity_target(items, 2)
+    assert result.capacity == 9
+    assert all(k.total_volume <= result.capacity for k in result.kilns)
+
+
+def test_capacity_target_random_brute_force():
+    """对随机小用例穷举每个整数容量的最少窑次，校验二分反推结果。"""
+    rng = random.Random(7)
+    for trial in range(200):
+        n = rng.randint(1, 7)
+        items = []
+        for i in range(n):
+            lo = rng.randint(900, 1000)
+            items.append(
+                Ware(f"id{i}", rng.randint(1, 8), lo, lo + rng.randint(0, 100))
+            )
+        max_volume = max(it.volume for it in items)
+        total_volume = sum(it.volume for it in items)
+        # 穷举：capacity -> 最少窑次
+        kiln_counts = {
+            cap: len(solve(items, cap)) for cap in range(max_volume, total_volume + 1)
+        }
+        min_possible = kiln_counts[total_volume]
+        for target in range(1, n + 1):
+            if target < min_possible:
+                try:
+                    solve_capacity_target(items, target)
+                    assert False, f"trial {trial}: 目标 {target} 应不可达"
+                except TargetUnreachableError:
+                    pass
+                continue
+            result = solve_capacity_target(items, target)
+            expected_cap = min(
+                cap for cap, k in kiln_counts.items() if k <= target
+            )
+            assert result.capacity == expected_cap, (
+                f"trial {trial}: target={target}, got cap {result.capacity}, "
+                f"expected {expected_cap}, items={items}"
+            )
+            assert result.kiln_count == kiln_counts[expected_cap]
+            assert result.kiln_count <= target
+            # 明细应与直接以该容量调用 solve 完全一致（同排序规则）
+            direct = solve(items, result.capacity)
+            assert tuple(result.kilns) == tuple(direct)
 
 
 if __name__ == "__main__":

@@ -114,6 +114,82 @@ curl 示例：
 curl -s http://localhost:8000/plans/9c05e113e3e0430eb552a0bd01036dbb
 ```
 
+### 3. 反推满足目标窑次的最小容量
+
+`POST http://localhost:8000/plans/{id}/capacity-target`
+
+针对**已保存**的方案，给定希望达到的目标窑次，反推满足该目标所需的**最小单窑容量**。
+计算一律以原方案保存的器物体积与温度区间为准（临时重算，**不落库、不改写原方案**）：
+
+- 在 **最大单件体积 ～ 器物总体积** 的整数容量区间内二分查找；
+- 每个候选容量都沿用与创建接口完全相同的求解器：同窑温区交集规则、
+  最少窑次 DP，以及窑次相同时的整体字典序排序规则；
+- 返回满足「最少窑次 ≤ 目标窑次」的**最小容量**、该容量下的**实际窑次**
+  与对应**装窑明细**；
+- 若容量放宽到总体积（此时仅受温度区间约束）仍无法达到目标，返回明确的
+  不可达错误（HTTP 400，错误码 `TARGET_UNREACHABLE`）。
+
+请求体：
+
+```json
+{
+  "target_kiln_count": 2
+}
+```
+
+`target_kiln_count` 为正整数，取值范围 **1～原方案器物数**；超过上界返回
+`422`（错误码 `TARGET_OUT_OF_RANGE`）。
+
+以上面创建的 4 件器物方案（原容量 10、3 窑）为例，`curl` 调用：
+
+```bash
+curl -s -X POST http://localhost:8000/plans/9c05e113e3e0430eb552a0bd01036dbb/capacity-target \
+  -H "Content-Type: application/json" \
+  -d '{"target_kiln_count": 2}'
+```
+
+成功响应 `200 OK`：
+
+```json
+{
+  "plan_id": "9c05e113e3e0430eb552a0bd01036dbb",
+  "target_kiln_count": 2,
+  "capacity": 15,
+  "item_count": 4,
+  "kiln_count": 2,
+  "kilns": [
+    {"index": 1, "item_ids": ["p1", "p2", "p3"], "total_volume": 15, "firing_temp": 150},
+    {"index": 2, "item_ids": ["p4"],          "total_volume": 5,  "firing_temp": 1000}
+  ]
+}
+```
+
+即容量 15 时 p1/p2/p3 可同窑（总体积 15、温度交集 150℃），p4 温区
+（1000～1100℃）与其无交集必须单开一窑；容量 14 及以下无法把 p1/p2/p3
+装入同窑，故 **15 即满足 2 窑目标的最小容量**。
+
+不可达示例（同一方案要求 1 窑）：
+
+```bash
+curl -s -X POST http://localhost:8000/plans/9c05e113e3e0430eb552a0bd01036dbb/capacity-target \
+  -H "Content-Type: application/json" \
+  -d '{"target_kiln_count": 1}'
+```
+
+```json
+{
+  "error": "TARGET_UNREACHABLE",
+  "message": "目标窑次 1 不可达：即使单窑容量放宽到总体积 20（温度区间约束成为唯一限制），最少仍需 2 窑"
+}
+```
+
+错误情况：
+
+- `400` `TARGET_UNREACHABLE`：总体积容量下最少窑次仍超过目标（温度区间无法兼容）；
+- `404` `PLAN_NOT_FOUND`：方案不存在；
+- `422` `TARGET_OUT_OF_RANGE`：目标窑次超出 1～原方案器物数；
+- `422`：请求体非法（缺字段 / 非正整数等）。
+
 ## 本地开发（不使用 Docker）
 
 ```bash

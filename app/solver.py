@@ -14,6 +14,10 @@
   3. 贪心重建字典序最小方案：每一步在剩余器物中，找到包含剩余器物
      最小编号、且取出后剩余部分仍可在剩余窑次内装完的、
      器物编号序列字典序最小的子集作为下一窑。
+
+容量反推 solve_capacity_target：
+  给定目标窑次，在 [最大单件体积, 总体积] 的整数容量区间二分查找，
+  复用 solve 判定每个容量下的最少窑次，返回使窑次不超过目标的最小容量。
 """
 
 from __future__ import annotations
@@ -23,6 +27,10 @@ from dataclasses import dataclass
 
 class CapacityExceededError(ValueError):
     """单件器物体积超过单窑容量，无法烧成。"""
+
+
+class TargetUnreachableError(ValueError):
+    """即使容量放宽到总体积（温度约束成为唯一限制），仍无法达到目标窑次。"""
 
 
 @dataclass(frozen=True)
@@ -40,6 +48,15 @@ class Kiln:
     item_ids: tuple[str, ...]
     total_volume: int
     firing_temp: int
+
+
+@dataclass(frozen=True)
+class CapacityTarget:
+    """容量反推结果：满足目标窑次的最小容量、实际窑次与装窑明细。"""
+
+    capacity: int
+    kiln_count: int
+    kilns: tuple[Kiln, ...]
 
 
 def solve(items: list[Ware], capacity: int) -> list[Kiln]:
@@ -155,3 +172,56 @@ def solve(items: list[Ware], capacity: int) -> list[Kiln]:
         allowed_kilns -= 1
 
     return kilns
+
+
+def solve_capacity_target(items: list[Ware], target_kiln_count: int) -> CapacityTarget:
+    """反推使最少窑次不超过目标的最小单窑容量。
+
+    搜索范围为 [最大单件体积, 全部器物总体积] 的整数容量：容量低于最大单件
+    体积时必无法烧成；容量等于总体积时容量约束完全松弛，窑次仅由温度区间
+    交集决定。容量越大可同窑的器物越多，最少窑次关于容量单调不增，故使用
+    二分查找。每个候选容量均调用 solve 判定，沿用同一套同窑温区规则与
+    同窑次方案排序（字典序）规则。
+
+    :raises TargetUnreachableError: 总体积容量下最少窑次仍超过目标。
+    :raises ValueError: 器物列表为空 / 超过 14 件，或目标窑次不在
+        1～器物数之间。
+    """
+
+    n = len(items)
+    if n == 0:
+        raise ValueError("至少需要一件器物")
+    if n > 14:
+        raise ValueError("器物数量不得超过 14 件")
+    if not 1 <= target_kiln_count <= n:
+        raise ValueError(f"目标窑次必须在 1～{n} 之间")
+
+    max_volume = max(it.volume for it in items)
+    total_volume = sum(it.volume for it in items)
+
+    cache: dict[int, list[Kiln]] = {}
+
+    def run(capacity: int) -> list[Kiln]:
+        if capacity not in cache:
+            cache[capacity] = solve(items, capacity)
+        return cache[capacity]
+
+    # 总体积容量下仅受温度约束；仍达不到目标则任何容量都不可行。
+    at_total = run(total_volume)
+    if len(at_total) > target_kiln_count:
+        raise TargetUnreachableError(
+            f"目标窑次 {target_kiln_count} 不可达：即使单窑容量放宽到总体积 "
+            f"{total_volume}（温度区间约束成为唯一限制），最少仍需 "
+            f"{len(at_total)} 窑"
+        )
+
+    lo, hi = max_volume, total_volume
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if len(run(mid)) <= target_kiln_count:
+            hi = mid
+        else:
+            lo = mid + 1
+
+    kilns = run(lo)
+    return CapacityTarget(capacity=lo, kiln_count=len(kilns), kilns=tuple(kilns))
